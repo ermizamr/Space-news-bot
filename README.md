@@ -1,6 +1,5 @@
 # Space News Bot
-![Space News Bot](https://i.ibb.co/v474j0wW/reesized.png) 
-
+![Space News Bot](https://i.ibb.co/HTR50xSG/Gemini-Generated-Image-76vjgk76vjgk76vj-4.png)
 ### A simple Telegram bot that fetches and sends daily space news updates to a channel.
 
 ## Features
