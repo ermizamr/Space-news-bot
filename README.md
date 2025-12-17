@@ -1,6 +1,7 @@
 # Space News Bot
+![Space News Bot](https://i.ibb.co/v474j0wW/reesized.png) 
 
-A Telegram bot that fetches and sends daily space news updates to a channel.
+### A simple Telegram bot that fetches and sends daily space news updates to a channel.
 
 ## Features
 - Fetches the latest space news from the Spaceflight News API.
