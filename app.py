@@ -146,7 +146,7 @@ def send_now() -> str:
 start_scheduler_once()
 start_listener_once()
 
-with gr.Blocks(title="Space News Bot", theme=gr.themes.Soft()) as demo:
+with gr.Blocks(title="Space News Bot") as demo:
     gr.Markdown(
         """
         # Space News Bot
@@ -169,4 +169,5 @@ with gr.Blocks(title="Space News Bot", theme=gr.themes.Soft()) as demo:
 
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    demo.queue()
+    demo.launch(server_name="0.0.0.0", server_port=7860, share=False)
