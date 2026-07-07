@@ -137,6 +137,7 @@ def format_status() -> str:
         f"Registered chats   : {registered}\n"
         f"Fallback channel   : {settings.channel_id}\n"
         f"Timezone           : {settings.timezone_name}\n"
+        f"Telegram API base  : {settings.telegram_api_base}\n"
         f"News limit         : {settings.news_limit}\n"
         f"Scheduler          : {os.getenv('ENABLE_SCHEDULER', 'true')}\n"
         f"Telegram listener  : {os.getenv('ENABLE_TELEGRAM_LISTENER', 'true')}\n"

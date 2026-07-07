@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 logger = logging.getLogger(__name__)
 
 DEFAULT_API_URL = "https://api.spaceflightnewsapi.net/v4/articles/"
+DEFAULT_TELEGRAM_API_BASE = "https://api.telegram.org"
 DEFAULT_LIMIT = 5
 DEFAULT_TIMEZONE = "Africa/Addis_Ababa"
 DEFAULT_CHANNEL = "@channel_of_ermi"
@@ -63,10 +64,22 @@ class BotSettings:
     news_limit: int
     api_url: str
     registry_path: str
+    telegram_api_base: str
 
     @property
     def timezone(self):
         return pytz.timezone(self.timezone_name)
+
+
+def telegram_api_base() -> str:
+    """Base URL for the Telegram Bot API.
+
+    Configurable via TELEGRAM_API_BASE so the bot can reach Telegram through a
+    proxy (e.g. a Cloudflare Worker) on hosts that block api.telegram.org,
+    such as the Hugging Face Spaces free tier.
+    """
+
+    return os.getenv("TELEGRAM_API_BASE", DEFAULT_TELEGRAM_API_BASE).rstrip("/")
 
 
 def get_settings() -> BotSettings:
@@ -84,6 +97,7 @@ def get_settings() -> BotSettings:
         news_limit=news_limit,
         api_url=os.getenv("SPACE_NEWS_API_URL", DEFAULT_API_URL),
         registry_path=os.getenv("TELEGRAM_TARGETS_FILE", DEFAULT_REGISTRY_FILE),
+        telegram_api_base=telegram_api_base(),
     )
 
 
@@ -274,7 +288,7 @@ def deliver_telegram_message(token: str, chat_id: str, text: str) -> dict[str, A
     ``dead`` (whether the chat can no longer be reached and should be pruned).
     """
 
-    endpoint = f"https://api.telegram.org/bot{token}/sendMessage"
+    endpoint = f"{telegram_api_base()}/bot{token}/sendMessage"
     payload = {
         "chat_id": chat_id,
         "text": text,
@@ -464,7 +478,7 @@ def fetch_telegram_updates(
 ) -> list[dict[str, Any]]:
     """Fetch Telegram updates using long polling."""
 
-    endpoint = f"https://api.telegram.org/bot{token}/getUpdates"
+    endpoint = f"{telegram_api_base()}/bot{token}/getUpdates"
     params: dict[str, Any] = {"timeout": timeout}
     if offset is not None:
         params["offset"] = offset

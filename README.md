@@ -41,7 +41,33 @@ A Telegram bot that fetches the latest space news and sends a formatted digest e
    - Optional: `DAILY_POST_TIME=06:00`
    - Optional: `NEWS_LIMIT=5`
    - Optional: `BOT_TIMEZONE=Africa/Addis_Ababa`
+   - Optional: `TELEGRAM_API_BASE` (see the note below for the Spaces free tier)
 4. The Space will start from [app.py](app.py) and expose a small control panel.
+
+## Reaching Telegram from Hugging Face Spaces
+The Hugging Face Spaces **free tier blocks outbound connections to `api.telegram.org`**
+(the same applies to Discord/WhatsApp). Symptom: the logs show repeated
+`Telegram updates request failed: ... Read timed out` / `SSL: UNEXPECTED_EOF` even
+though the token is valid and other sites (e.g. the Spaceflight News API) work fine.
+
+Route Telegram through a proxy on a domain the Space *can* reach — a free Cloudflare
+Worker works well:
+
+1. Create a Worker at <https://workers.cloudflare.com/> with this code:
+   ```js
+   export default {
+     async fetch(request) {
+       const url = new URL(request.url);
+       url.hostname = "api.telegram.org";
+       return fetch(new Request(url, request));
+     },
+   };
+   ```
+2. Deploy it and copy its URL, e.g. `https://space-news.<your-subdomain>.workers.dev`.
+3. In the Space secrets, set `TELEGRAM_API_BASE` to that URL and restart.
+
+The bot then sends every Telegram request through the Worker, which forwards it to
+Telegram. A paid Space (which has unrestricted egress) does not need this.
 
 ## Telegram audience behavior
 - Private chats are registered when someone sends `/start` to the bot.
