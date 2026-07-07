@@ -11,8 +11,9 @@ import json
 import logging
 import os
 import threading
+import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,24 @@ DEFAULT_CHANNEL = "@channel_of_ermi"
 DEFAULT_REGISTRY_FILE = "telegram_targets.json"
 DEFAULT_LISTENER_TIMEOUT = 50
 MAX_ARTICLES_PER_MESSAGE = 5
+BROADCAST_THROTTLE_SECONDS = 0.05
+DIVIDER = "━━━━━━━━━━━━━━━━━━━"
+
+# Substrings in Telegram error descriptions that mean a chat can never receive
+# messages again, so it should be pruned from the registry.
+_DEAD_CHAT_MARKERS = (
+    "bot was blocked",
+    "user is deactivated",
+    "chat not found",
+    "bot was kicked",
+    "group chat was deactivated",
+    "not enough rights",
+    "have no rights",
+    "not a member",
+    "bot is not a member",
+    "peer_id_invalid",
+    "chat_write_forbidden",
+)
 
 _registry_lock = threading.Lock()
 
@@ -134,7 +153,7 @@ def upsert_registered_chat(chat: dict[str, Any], settings: BotSettings | None = 
         "chat_type": chat.get("type", "unknown"),
         "title": _normalized_chat_name(chat),
         "username": chat.get("username"),
-        "registered_at": datetime.utcnow().isoformat() + "Z",
+        "registered_at": datetime.now(timezone.utc).isoformat(),
     }
 
     with _registry_lock:
@@ -149,6 +168,24 @@ def upsert_registered_chat(chat: dict[str, Any], settings: BotSettings | None = 
         save_registered_chats(chats, runtime_settings)
 
     return True
+
+
+def prune_registered_chats(chat_ids: list[str], settings: BotSettings | None = None) -> int:
+    """Remove chats that can no longer be reached (blocked, kicked, deleted)."""
+
+    ids_to_remove = {str(chat_id) for chat_id in chat_ids}
+    if not ids_to_remove:
+        return 0
+
+    with _registry_lock:
+        chats = load_registered_chats(settings)
+        remaining = [chat for chat in chats if str(chat.get("chat_id")) not in ids_to_remove]
+        removed = len(chats) - len(remaining)
+        if removed:
+            save_registered_chats(remaining, settings)
+            logger.info("Pruned %s unreachable chat(s) from the registry.", removed)
+
+    return removed
 
 
 def collect_delivery_targets(settings: BotSettings | None = None) -> list[dict[str, Any]]:
@@ -222,8 +259,12 @@ def fetch_latest_space_news(limit: int | None = None, timezone_name: str | None 
         return []
 
 
-def send_telegram_message(token: str, chat_id: str, text: str) -> bool:
-    """Send a Telegram message using the HTTP Bot API."""
+def deliver_telegram_message(token: str, chat_id: str, text: str) -> dict[str, Any]:
+    """Send a Telegram message and report a structured delivery status.
+
+    Returns a dict with ``ok`` (whether the message was delivered) and
+    ``dead`` (whether the chat can no longer be reached and should be pruned).
+    """
 
     endpoint = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
@@ -235,18 +276,30 @@ def send_telegram_message(token: str, chat_id: str, text: str) -> bool:
 
     try:
         response = requests.post(endpoint, json=payload, timeout=20)
-        response.raise_for_status()
-        response_data = response.json()
-        if not response_data.get("ok", False):
-            logger.error("Telegram API returned an error: %s", response_data)
-            return False
-        return True
     except requests.RequestException as exc:
-        logger.error("Telegram request failed: %s", exc)
-        return False
-    except ValueError as exc:
-        logger.error("Telegram response could not be parsed: %s", exc)
-        return False
+        logger.error("Telegram request to %s failed: %s", chat_id, exc)
+        return {"ok": False, "dead": False}
+
+    try:
+        data = response.json()
+    except ValueError:
+        logger.error("Telegram response for %s could not be parsed (HTTP %s).", chat_id, response.status_code)
+        return {"ok": False, "dead": False}
+
+    if data.get("ok"):
+        return {"ok": True, "dead": False}
+
+    description = str(data.get("description", "")).lower()
+    is_dead = response.status_code in {400, 403} and any(marker in description for marker in _DEAD_CHAT_MARKERS)
+    log = logger.info if is_dead else logger.error
+    log("Telegram send to %s failed: %s", chat_id, data.get("description") or data)
+    return {"ok": False, "dead": is_dead}
+
+
+def send_telegram_message(token: str, chat_id: str, text: str) -> bool:
+    """Send a Telegram message using the HTTP Bot API. Returns delivery success."""
+
+    return deliver_telegram_message(token, chat_id, text)["ok"]
 
 
 def _escape_message_value(value: Any) -> str:
@@ -265,18 +318,22 @@ def _truncate_text(value: Any, max_length: int = 240) -> str:
 
 
 def format_article_digest(articles: list[dict[str, Any]], timezone_name: str) -> str:
-    """Format a compact Telegram digest for one or more articles."""
+    """Format a compact, polished Telegram digest for one or more articles."""
 
     timezone = pytz.timezone(timezone_name)
+    selected = articles[:MAX_ARTICLES_PER_MESSAGE]
+    today = _escape_message_value(datetime.now(timezone).strftime("%A, %d %B %Y"))
+
     lines = [
-        "<b>Latest Space News</b>",
-        f"<i>{_escape_message_value(datetime.now(timezone).strftime('%a, %d %b %Y'))}</i>",
+        "🚀 <b>Space News Digest</b>",
+        f"📅 <i>{today}</i>",
+        DIVIDER,
         "",
     ]
 
-    for index, article in enumerate(articles[:MAX_ARTICLES_PER_MESSAGE], start=1):
+    for index, article in enumerate(selected, start=1):
         title = _escape_message_value(article.get("title", "Untitled article"))
-        url = _escape_message_value(article.get("url", ""))
+        url = str(article.get("url", "")).strip()
         source = _escape_message_value(article.get("news_site") or article.get("source") or "Spaceflight News")
         published_at = article.get("published_at")
         summary = article.get("summary") or article.get("description") or article.get("excerpt")
@@ -284,30 +341,39 @@ def format_article_digest(articles: list[dict[str, Any]], timezone_name: str) ->
         published_text = ""
         if published_at:
             try:
-                published_dt = datetime.fromisoformat(published_at.replace("Z", "+00:00")).astimezone(timezone)
+                published_dt = datetime.fromisoformat(str(published_at).replace("Z", "+00:00")).astimezone(timezone)
                 published_text = published_dt.strftime("%H:%M %Z")
             except ValueError:
                 published_text = ""
 
-        lines.append(f"<b>{index}. {title}</b>")
-        lines.append(f"Source: {source}")
+        meta = f"🛰 {source}"
         if published_text:
-            lines.append(f"Published: {published_text}")
+            meta += f" · 🕒 {_escape_message_value(published_text)}"
+
+        lines.append(f"<b>{index}. {title}</b>")
+        lines.append(meta)
         if summary:
             lines.append(_escape_message_value(_truncate_text(summary)))
         if url:
-            lines.append(f"<a href=\"{_escape_message_attribute(url)}\">Read full story</a>")
+            lines.append(f"🔗 <a href=\"{_escape_message_attribute(url)}\">Read full story</a>")
         lines.append("")
+
+    story_word = "story" if len(selected) == 1 else "stories"
+    lines.append(DIVIDER)
+    lines.append(f"🌌 <i>{len(selected)} {story_word} · via Spaceflight News</i>")
 
     return "\n".join(lines).strip()
 
 
 def build_no_news_message(timezone_name: str) -> str:
     timezone = pytz.timezone(timezone_name)
+    today = _escape_message_value(datetime.now(timezone).strftime("%A, %d %B %Y"))
     return (
-        "<b>Latest Space News</b>\n"
-        f"<i>{_escape_message_value(datetime.now(timezone).strftime('%a, %d %b %Y'))}</i>\n\n"
-        "No fresh space articles were found in the latest fetch."
+        "🚀 <b>Space News Digest</b>\n"
+        f"📅 <i>{today}</i>\n"
+        f"{DIVIDER}\n\n"
+        "🌑 No fresh space stories surfaced in the latest fetch. "
+        "We'll be back with the next update."
     )
 
 
@@ -315,12 +381,29 @@ def build_start_message(settings: BotSettings | None = None) -> str:
     """Return a welcome message for chats that start or add the bot."""
 
     runtime_settings = settings or get_settings()
+    post_time = os.getenv("DAILY_POST_TIME", "06:00")
     return (
-        "<b>Space News Bot is ready</b>\n"
-        "This chat is now registered for the space news digest.\n\n"
-        f"Timezone: {_escape_message_value(runtime_settings.timezone_name)}\n"
-        f"News limit: {runtime_settings.news_limit}\n"
-        "Use /news to request the latest digest now."
+        "🚀 <b>Welcome to Space News Bot!</b>\n"
+        f"{DIVIDER}\n"
+        "✅ This chat is now subscribed to the daily space news digest.\n\n"
+        f"🕕 Daily digest around <b>{_escape_message_value(post_time)}</b> "
+        f"({_escape_message_value(runtime_settings.timezone_name)})\n"
+        f"📰 Up to <b>{runtime_settings.news_limit}</b> top stories per digest\n\n"
+        "Send /news anytime to get the latest stories right now, or /help to see all commands."
+    )
+
+
+def build_help_message(settings: BotSettings | None = None) -> str:
+    """Return the list of supported commands."""
+
+    return (
+        "🚀 <b>Space News Bot — Commands</b>\n"
+        f"{DIVIDER}\n"
+        "/news — send the latest space news digest now\n"
+        "/digest — same as /news\n"
+        "/start — subscribe this chat and see the schedule\n"
+        "/help — show this message\n\n"
+        "Add me to a group or channel to broadcast the digest there automatically."
     )
 
 
@@ -338,15 +421,22 @@ def process_telegram_update(update: dict[str, Any], settings: BotSettings | None
 
         text = message.get("text")
         if isinstance(chat, dict) and isinstance(text, str) and text.startswith("/"):
-            command = text.split("@", 1)[0].strip().lower()
+            command = text.split("@", 1)[0].split()[0].strip().lower()
             if command in {"/start", "/help", "/news", "/digest"}:
                 result["reply_chat_id"] = str(chat.get("id", ""))
                 if command == "/start":
                     result["reply_text"] = build_start_message(runtime_settings)
-                else:
+                elif command == "/help":
+                    result["reply_text"] = build_help_message(runtime_settings)
+                else:  # /news or /digest: deliver the current digest on demand.
+                    articles = fetch_latest_space_news(
+                        limit=runtime_settings.news_limit,
+                        timezone_name=runtime_settings.timezone_name,
+                    )
                     result["reply_text"] = (
-                        "<b>Space News Bot</b>\n"
-                        "Your chat is registered. The next digest will be sent automatically."
+                        format_article_digest(articles, runtime_settings.timezone_name)
+                        if articles
+                        else build_no_news_message(runtime_settings.timezone_name)
                     )
 
     membership = update.get("my_chat_member")
@@ -409,31 +499,47 @@ def send_news_to_channel(articles: list[dict[str, Any]], settings: BotSettings |
         return {
             "ok": False,
             "sent_count": 0,
-            "message": "No Telegram destinations are registered yet.",
+            "failed_count": 0,
+            "pruned_count": 0,
+            "message": "No Telegram destinations are registered yet. Start the bot or add it to a group/channel first.",
         }
 
-    if not articles:
+    if articles:
+        message = format_article_digest(articles, runtime_settings.timezone_name)
+        summary_kind = "digest"
+    else:
         message = build_no_news_message(runtime_settings.timezone_name)
-        sent_count = 0
-        for target in targets:
-            if send_telegram_message(runtime_settings.telegram_bot_token, str(target["chat_id"]), message):
-                sent_count += 1
-        return {
-            "ok": sent_count > 0,
-            "sent_count": sent_count,
-            "message": "No new articles found for today.",
-        }
+        summary_kind = "no-news notice"
 
-    digest_message = format_article_digest(articles, runtime_settings.timezone_name)
     sent_count = 0
+    failed_count = 0
+    dead_chat_ids: list[str] = []
+
     for target in targets:
-        if send_telegram_message(runtime_settings.telegram_bot_token, str(target["chat_id"]), digest_message):
+        chat_id = str(target["chat_id"])
+        status = deliver_telegram_message(runtime_settings.telegram_bot_token, chat_id, message)
+        if status["ok"]:
             sent_count += 1
+        else:
+            failed_count += 1
+            if status["dead"]:
+                dead_chat_ids.append(chat_id)
+        time.sleep(BROADCAST_THROTTLE_SECONDS)
+
+    pruned_count = prune_registered_chats(dead_chat_ids, runtime_settings)
+
+    summary = f"Broadcast {summary_kind} to {sent_count}/{len(targets)} chat(s)."
+    if failed_count:
+        summary += f" {failed_count} failed."
+    if pruned_count:
+        summary += f" Removed {pruned_count} unreachable chat(s)."
 
     return {
         "ok": sent_count > 0,
         "sent_count": sent_count,
-        "message": f"Sent a digest to {sent_count} destination(s).",
+        "failed_count": failed_count,
+        "pruned_count": pruned_count,
+        "message": summary,
     }
 
 

@@ -13,6 +13,7 @@ import gradio as gr
 from space_news_bot import (
     fetch_telegram_updates,
     get_settings,
+    load_registered_chats,
     post_news,
     process_telegram_update,
     send_telegram_message,
@@ -125,22 +126,27 @@ def start_listener_once() -> None:
 
 def format_status() -> str:
     settings = get_settings()
-    token_status = "configured" if settings.telegram_bot_token else "missing"
+    token_status = "✅ configured" if settings.telegram_bot_token else "❌ missing"
+    registered = len(load_registered_chats(settings))
     return (
-        f"Telegram token: {token_status}\n"
-        f"Fallback channel: {settings.channel_id}\n"
-        f"Timezone: {settings.timezone_name}\n"
-        f"News limit: {settings.news_limit}\n"
-        f"Scheduler: {os.getenv('ENABLE_SCHEDULER', 'true')}\n"
-        f"Telegram listener: {os.getenv('ENABLE_TELEGRAM_LISTENER', 'true')}\n"
-        f"Daily post time: {os.getenv('DAILY_POST_TIME', '06:00')}\n"
-        f"Delivery mode: latest digest to all registered chats"
+        f"Telegram token     : {token_status}\n"
+        f"Registered chats   : {registered}\n"
+        f"Fallback channel   : {settings.channel_id}\n"
+        f"Timezone           : {settings.timezone_name}\n"
+        f"News limit         : {settings.news_limit}\n"
+        f"Scheduler          : {os.getenv('ENABLE_SCHEDULER', 'true')}\n"
+        f"Telegram listener  : {os.getenv('ENABLE_TELEGRAM_LISTENER', 'true')}\n"
+        f"Daily post time    : {os.getenv('DAILY_POST_TIME', '06:00')}\n"
+        f"Delivery mode      : latest digest to every registered chat + fallback channel"
     )
 
 
 def send_now() -> str:
+    settings = get_settings()
+    stamp = datetime.now(settings.timezone).strftime("%H:%M %Z")
     result = post_news()
-    return result["message"]
+    icon = "✅" if result.get("ok") else "⚠️"
+    return f"{icon} {result['message']}\n🕒 {stamp}"
 
 
 start_scheduler_once()
