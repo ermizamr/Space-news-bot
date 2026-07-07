@@ -1,4 +1,10 @@
+# Pin the Gradio web stack to a self-consistent set.
+# gradio 4.44.1 only caps fastapi<1.0, so an unpinned build pulls a newer
+# FastAPI/Starlette whose TemplateResponse signature changed, causing
+# "TypeError: unhashable type: 'dict'" and a failed launch on Spaces.
 gradio==4.44.1
+fastapi==0.112.2
+starlette==0.38.6
 huggingface-hub>=0.19.3,<1.0
 python-dotenv>=1.0
 pytz>=2024.1
