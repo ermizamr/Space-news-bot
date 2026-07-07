@@ -116,17 +116,25 @@ def load_registered_chats(settings: BotSettings | None = None) -> list[dict[str,
     return chats
 
 
-def save_registered_chats(chats: list[dict[str, Any]], settings: BotSettings | None = None) -> None:
-    """Persist Telegram destinations atomically."""
+def save_registered_chats(chats: list[dict[str, Any]], settings: BotSettings | None = None) -> bool:
+    """Persist Telegram destinations atomically. Never raises.
+
+    Returns True on success. A read-only filesystem (as on some Hugging Face
+    Spaces) only means registrations are not persisted; it must not break the
+    listener or prevent command replies, so failures are logged and swallowed.
+    """
 
     registry_file = _registry_file(settings)
-    registry_file.parent.mkdir(parents=True, exist_ok=True)
-    temp_file = registry_file.with_suffix(f"{registry_file.suffix}.tmp")
-
-    with temp_file.open("w", encoding="utf-8") as handle:
-        json.dump(chats, handle, indent=2, ensure_ascii=False)
-
-    temp_file.replace(registry_file)
+    try:
+        registry_file.parent.mkdir(parents=True, exist_ok=True)
+        temp_file = registry_file.with_suffix(f"{registry_file.suffix}.tmp")
+        with temp_file.open("w", encoding="utf-8") as handle:
+            json.dump(chats, handle, indent=2, ensure_ascii=False)
+        temp_file.replace(registry_file)
+        return True
+    except OSError as exc:
+        logger.warning("Could not persist Telegram registry %s: %s", registry_file, exc)
+        return False
 
 
 def _normalized_chat_name(chat: dict[str, Any]) -> str:

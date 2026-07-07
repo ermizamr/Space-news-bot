@@ -90,22 +90,26 @@ def telegram_listener_loop() -> None:
     allowed_updates = ["message", "channel_post", "my_chat_member"]
 
     while True:
-        updates = fetch_telegram_updates(
-            settings.telegram_bot_token,
-            offset=offset,
-            allowed_updates=allowed_updates,
-        )
+        try:
+            updates = fetch_telegram_updates(
+                settings.telegram_bot_token,
+                offset=offset,
+                allowed_updates=allowed_updates,
+            )
 
-        for update in updates:
-            update_id = update.get("update_id")
-            if isinstance(update_id, int):
-                offset = update_id + 1
+            for update in updates:
+                update_id = update.get("update_id")
+                if isinstance(update_id, int):
+                    offset = update_id + 1
 
-            payload = process_telegram_update(update, settings)
-            reply_chat_id = payload.get("reply_chat_id")
-            reply_text = payload.get("reply_text")
-            if reply_chat_id and reply_text:
-                send_telegram_message(settings.telegram_bot_token, str(reply_chat_id), str(reply_text))
+                payload = process_telegram_update(update, settings)
+                reply_chat_id = payload.get("reply_chat_id")
+                reply_text = payload.get("reply_text")
+                if reply_chat_id and reply_text:
+                    send_telegram_message(settings.telegram_bot_token, str(reply_chat_id), str(reply_text))
+        except Exception:  # noqa: BLE001 - keep the listener alive no matter what
+            logger.exception("Telegram listener iteration failed; retrying shortly.")
+            time.sleep(3)
 
 
 def start_listener_once() -> None:
